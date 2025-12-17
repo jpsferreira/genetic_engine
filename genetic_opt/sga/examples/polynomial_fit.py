@@ -4,13 +4,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 import random
 import time
-import sys
 import argparse
 from pathlib import Path
 from typing import List
 
-from genetic_opt.optimizer import SimpleGeneticAlgorithm
-from genetic_opt.utils import analyze_population_migration
+from genetic_opt.sga.optimizer import SimpleGeneticAlgorithm
+from genetic_opt.sga.utils import analyze_population_migration
 
 
 def polynomial_fit_example(

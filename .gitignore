@@ -68,3 +68,8 @@ coverage.xml
 
 # macOS
 .DS_Store
+
+# Runtime files and directories
+*.log
+scripts/analysis/
+scripts/results/

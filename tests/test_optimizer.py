@@ -1,10 +1,9 @@
 """Tests for the genetic optimizer."""
 
-import pytest
 import numpy as np
 import random
 
-from genetic_opt.optimizer import SimpleGeneticAlgorithm
+from genetic_opt.sga.optimizer import SimpleGeneticAlgorithm
 
 
 def test_simple_genetic_algorithm_initialization():

@@ -6,11 +6,10 @@ This script lists available examples and directs users to the specific entry poi
 """
 
 import os
-import argparse
 import sys
 
 # Add the parent directory to path if needed
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
 def main():
@@ -36,4 +35,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()
