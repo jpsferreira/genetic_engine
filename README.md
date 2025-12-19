@@ -2,6 +2,8 @@
 
 A Python library for genetic algorithms and optimization.
 
+![Optimization Demo](opt_demo.gif)
+
 ## Features
 
 - Modular genetic algorithm implementation
