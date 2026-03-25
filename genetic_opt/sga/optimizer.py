@@ -6,7 +6,7 @@ import time
 import psutil
 import statistics
 import atexit
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from typing import Callable, List, Optional, Tuple, Dict
 from pathlib import Path
 
@@ -33,13 +33,15 @@ class GeneticOptimizer(abc.ABC):
         export_data: bool = True,
         parallel_evaluation: bool = False,
         n_workers: Optional[int] = None,
+        convergence_threshold: Optional[float] = None,
+        convergence_generations: int = 20,
     ):
         """Initialize the genetic optimizer.
 
         Args:
             fitness_function: Function to evaluate solutions
             population_size: Number of individuals in the population
-            mutation_rate: Probability of mutation
+            mutation_rate: Probability of mutation (0.0 to 1.0)
             elite_size: Number of top individuals to keep unchanged
             verbose: Whether to print progress information
             live_monitor: Whether to show live monitoring interface
@@ -49,7 +51,29 @@ class GeneticOptimizer(abc.ABC):
                 (for expensive fitness functions)
             n_workers: Number of worker processes/threads for parallel
                 evaluation (None = CPU count)
+            convergence_threshold: Stop early if best fitness improves less
+                than this over convergence_generations. None disables early stopping.
+            convergence_generations: Number of generations to look back for
+                convergence check.
+
+        Raises:
+            ValueError: If parameters are invalid.
         """
+        # Validate parameters
+        if population_size < 2:
+            raise ValueError("population_size must be at least 2")
+        if not 0.0 <= mutation_rate <= 1.0:
+            raise ValueError("mutation_rate must be between 0.0 and 1.0")
+        if elite_size < 0:
+            raise ValueError("elite_size must be non-negative")
+        if elite_size >= population_size:
+            raise ValueError(
+                f"elite_size ({elite_size}) must be less than "
+                f"population_size ({population_size})"
+            )
+        if convergence_generations < 1:
+            raise ValueError("convergence_generations must be at least 1")
+
         self.fitness_function = fitness_function
         self.population_size = population_size
         self.mutation_rate = mutation_rate
@@ -60,6 +84,8 @@ class GeneticOptimizer(abc.ABC):
         self.export_data = export_data
         self.parallel_evaluation = parallel_evaluation
         self.n_workers = n_workers
+        self.convergence_threshold = convergence_threshold
+        self.convergence_generations = convergence_generations
         self.best_solution: Optional[Tuple[List[float], float]] = None
         self.metrics: Dict[str, List] = {
             "best_fitness": [],
@@ -69,8 +95,14 @@ class GeneticOptimizer(abc.ABC):
             "memory_usage_mb": [],
         }
         self.population_history: List[List[List[float]]] = []
+        self.fitness_history: List[List[float]] = []
         self.monitor = OptimizationMonitor() if live_monitor else None
         self.export_paths: Dict[str, str] = {}
+        self._stopped_early = False
+        self._n_generations_run = 0
+        # These are set during optimize()
+        self._chromosome_length: Optional[int] = None
+        self._bounds: Optional[List[Tuple[float, float]]] = None
 
         # Register a cleanup function to ensure curses is properly closed
         if self.live_monitor:
@@ -92,13 +124,27 @@ class GeneticOptimizer(abc.ABC):
         Returns:
             Tuple of (best_solution, best_fitness)
         """
+        if n_generations < 1:
+            raise ValueError("n_generations must be at least 1")
+        if chromosome_length < 1:
+            raise ValueError("chromosome_length must be at least 1")
+        if not bounds:
+            raise ValueError("bounds must not be empty")
+
+        self._chromosome_length = chromosome_length
+        self._bounds = bounds
+
         # Initialize population
         start_time = time.time()
         population = self._initialize_population(chromosome_length, bounds)
 
+        # Evaluate initial population fitness
+        initial_fitness = self._evaluate_population(population)
+
         # Save the initial population if tracking history
         if self.track_history:
             self.population_history.append([ind.copy() for ind in population])
+            self.fitness_history.append(initial_fitness.copy())
 
         if self.live_monitor:
             # Start the monitor
@@ -111,6 +157,8 @@ class GeneticOptimizer(abc.ABC):
             )
             print(header)
             print("-" * 85)
+
+        self._stopped_early = False
 
         # Run generations
         for generation in range(n_generations):
@@ -140,7 +188,9 @@ class GeneticOptimizer(abc.ABC):
 
             # Save the population if tracking history
             if self.track_history:
+                new_fitness = self._evaluate_population(population)
                 self.population_history.append([ind.copy() for ind in population])
+                self.fitness_history.append(new_fitness.copy())
 
             # Calculate metrics
             gen_time = time.time() - gen_start_time
@@ -155,7 +205,19 @@ class GeneticOptimizer(abc.ABC):
 
             # Show progress
             if self.live_monitor:
-                self.monitor.update(generation)
+                if not self.monitor.started:
+                    # Monitor was stopped (e.g. user pressed q), fall back to verbose
+                    self.live_monitor = False
+                    self.verbose = True
+                    header = (
+                        f"\n{'Generation':^10} | {'Best Fitness':^15} | "
+                        f"{'Avg Fitness':^15} | {'Std Fitness':^15} | "
+                        f"{'Time (s)':^10} | {'Memory (MB)':^12}"
+                    )
+                    print(header)
+                    print("-" * 85)
+                else:
+                    self.monitor.update(generation)
             elif self.verbose:
                 row = (
                     f"{generation:^10} | {best_fitness:^15.6f} | "
@@ -164,8 +226,17 @@ class GeneticOptimizer(abc.ABC):
                 )
                 print(row)
 
+            self._n_generations_run = generation + 1
+
+            # Check early stopping
+            if self._check_convergence():
+                self._stopped_early = True
+                if self.verbose and not self.live_monitor:
+                    print(f"\nEarly stopping: fitness converged after {generation + 1} generations")
+                break
+
         # Cleanup monitor if used
-        if self.live_monitor:
+        if self.live_monitor and self.monitor and self.monitor.started:
             self.monitor.stop()
 
         total_time = time.time() - start_time
@@ -179,6 +250,19 @@ class GeneticOptimizer(abc.ABC):
             self.export_run_data()
 
         return self.best_solution
+
+    def _check_convergence(self) -> bool:
+        """Check if optimization has converged based on convergence_threshold."""
+        if self.convergence_threshold is None:
+            return False
+
+        history = self.metrics["best_fitness"]
+        if len(history) < self.convergence_generations:
+            return False
+
+        recent = history[-self.convergence_generations :]
+        improvement = abs(recent[-1] - recent[0])
+        return improvement < self.convergence_threshold
 
     def export_run_data(
         self, directory: str = "results", base_filename: Optional[str] = None
@@ -220,14 +304,24 @@ class GeneticOptimizer(abc.ABC):
             )
             self.export_paths["population_history"] = history_file
 
-        # Export run metadata
+        # Export run metadata with complete configuration
         config = {
             "population_size": self.population_size,
             "mutation_rate": self.mutation_rate,
             "elite_size": self.elite_size,
-            "generations": len(self.metrics["best_fitness"]),
+            "generations_requested": len(self.metrics["best_fitness"]),
+            "generations_run": self._n_generations_run,
+            "stopped_early": self._stopped_early,
             "track_history": self.track_history,
+            "parallel_evaluation": self.parallel_evaluation,
+            "convergence_threshold": self.convergence_threshold,
+            "convergence_generations": self.convergence_generations,
         }
+
+        if self._chromosome_length is not None:
+            config["chromosome_length"] = self._chromosome_length
+        if self._bounds is not None:
+            config["bounds"] = self._bounds
 
         results = {}
         if self.best_solution:
@@ -279,9 +373,7 @@ class GeneticOptimizer(abc.ABC):
             List of fitness scores
         """
         if self.parallel_evaluation:
-            # Use ThreadPoolExecutor for I/O-bound fitness functions
-            # Use ProcessPoolExecutor for CPU-bound fitness functions
-            with ThreadPoolExecutor(max_workers=self.n_workers) as executor:
+            with ProcessPoolExecutor(max_workers=self.n_workers) as executor:
                 fitness_scores = list(executor.map(self.fitness_function, population))
         else:
             fitness_scores = [self.fitness_function(ind) for ind in population]
@@ -342,6 +434,9 @@ class SimpleGeneticAlgorithm(GeneticOptimizer):
         export_data: bool = True,
         parallel_evaluation: bool = False,
         n_workers: Optional[int] = None,
+        convergence_threshold: Optional[float] = None,
+        convergence_generations: int = 20,
+        mutation_scale: float = 0.1,
     ):
         """Initialize the simple genetic algorithm.
 
@@ -357,7 +452,24 @@ class SimpleGeneticAlgorithm(GeneticOptimizer):
             export_data: Whether to export run data to files on completion
             parallel_evaluation: Whether to evaluate fitness in parallel
             n_workers: Number of worker processes/threads for parallel evaluation
+            convergence_threshold: Stop early if fitness improvement is below this.
+            convergence_generations: Lookback window for convergence check.
+            mutation_scale: Scale of Gaussian mutation relative to gene range (0.0 to 1.0).
+                A value of 0.1 means mutations have a std dev of 10% of the gene range.
+
+        Raises:
+            ValueError: If parameters are invalid.
         """
+        if tournament_size < 1:
+            raise ValueError("tournament_size must be at least 1")
+        if tournament_size > population_size:
+            raise ValueError(
+                f"tournament_size ({tournament_size}) must not exceed "
+                f"population_size ({population_size})"
+            )
+        if not 0.0 < mutation_scale <= 1.0:
+            raise ValueError("mutation_scale must be between 0.0 (exclusive) and 1.0")
+
         super().__init__(
             fitness_function=fitness_function,
             population_size=population_size,
@@ -369,8 +481,11 @@ class SimpleGeneticAlgorithm(GeneticOptimizer):
             export_data=export_data,
             parallel_evaluation=parallel_evaluation,
             n_workers=n_workers,
+            convergence_threshold=convergence_threshold,
+            convergence_generations=convergence_generations,
         )
         self.tournament_size = tournament_size
+        self.mutation_scale = mutation_scale
 
     def _initialize_population(
         self, chromosome_length: int, bounds: List[Tuple[float, float]]
@@ -480,10 +595,11 @@ class SimpleGeneticAlgorithm(GeneticOptimizer):
     def _mutate(
         self, individual: List[float], bounds: List[Tuple[float, float]]
     ) -> List[float]:
-        """Apply random mutation to genes in the individual.
+        """Apply Gaussian mutation to genes in the individual.
 
-        Each gene has a probability of mutation_rate to be replaced with
-        a new random value within its bounds.
+        Each gene has a probability of mutation_rate to be perturbed by
+        Gaussian noise scaled to the gene's range. The result is clamped
+        to stay within bounds.
 
         Args:
             individual: Individual to mutate
@@ -496,5 +612,9 @@ class SimpleGeneticAlgorithm(GeneticOptimizer):
         for i in range(len(mutated)):
             if random.random() < self.mutation_rate:
                 min_val, max_val = self._get_bounds(i, bounds)
-                mutated[i] = random.uniform(min_val, max_val)
+                gene_range = max_val - min_val
+                sigma = gene_range * self.mutation_scale
+                mutated[i] += random.gauss(0, sigma)
+                # Clamp to bounds
+                mutated[i] = max(min_val, min(max_val, mutated[i]))
         return mutated

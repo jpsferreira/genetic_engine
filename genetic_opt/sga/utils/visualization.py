@@ -82,6 +82,7 @@ def plot_metrics(
     # Save figure if output file is specified
     if output_file:
         plt.savefig(output_file, dpi=300)
+        plt.close(fig)
 
     return fig
 
@@ -196,6 +197,7 @@ def plot_population_density(
     # Save figure if output file is specified
     if output_file:
         plt.savefig(output_file, dpi=300)
+        plt.close(fig)
 
     return fig
 
@@ -255,6 +257,19 @@ def create_population_migration_animation(
     y_min -= y_pad
     y_max += y_pad
 
+    # Pre-compute global max bin count for a consistent color scale
+    global_max_count = 0
+    xedges = np.linspace(x_min, x_max, bins + 1)
+    yedges = np.linspace(y_min, y_max, bins + 1)
+    for gen in unique_gens:
+        gen_data = pop_df[pop_df["generation"] == gen]
+        h, _, _ = np.histogram2d(
+            gen_data[gene_cols[0]],
+            gen_data[gene_cols[1]],
+            bins=[xedges, yedges],
+        )
+        global_max_count = max(global_max_count, h.max())
+
     # Create figure and axes
     fig, ax = plt.subplots(figsize=figsize)
     ax.set_xlabel(f"Gene {gene_indices[0]+1}")
@@ -262,13 +277,15 @@ def create_population_migration_animation(
     ax.set_xlim(x_min, x_max)
     ax.set_ylim(y_min, y_max)
 
-    # Initialize histogram (returns the histogram itself, bin edges, and quad mesh object)
-    h, xedges, yedges, quad = ax.hist2d(
+    # Initialize histogram with consistent vmax
+    h, _, _, quad = ax.hist2d(
         pop_df[pop_df["generation"] == unique_gens[0]][gene_cols[0]],
         pop_df[pop_df["generation"] == unique_gens[0]][gene_cols[1]],
         bins=bins,
         range=[[x_min, x_max], [y_min, y_max]],
         cmap=cmap,
+        vmin=0,
+        vmax=global_max_count,
     )
 
     # Add colorbar
@@ -293,13 +310,15 @@ def create_population_migration_animation(
         # Clear previous data
         ax.cla()
 
-        # Plot new data
-        h, xedges, yedges, quad = ax.hist2d(
+        # Plot new data with consistent color scale
+        ax.hist2d(
             gen_data[gene_cols[0]],
             gen_data[gene_cols[1]],
             bins=bins,
             range=[[x_min, x_max], [y_min, y_max]],
             cmap=cmap,
+            vmin=0,
+            vmax=global_max_count,
         )
 
         # Update axes labels and limits
@@ -309,7 +328,7 @@ def create_population_migration_animation(
         ax.set_ylim(y_min, y_max)
 
         # Update generation text
-        gen_text = ax.text(
+        ax.text(
             0.02,
             0.98,
             f"Generation: {gen}",
@@ -318,8 +337,6 @@ def create_population_migration_animation(
             verticalalignment="top",
             bbox=dict(boxstyle="round", facecolor="white", alpha=0.7),
         )
-
-        return quad, gen_text
 
     # Create animation
     anim = FuncAnimation(
@@ -464,6 +481,7 @@ def plot_population_statistics(
     # Save figure if output file is specified
     if output_file:
         plt.savefig(output_file, dpi=300)
+        plt.close(fig)
 
     return fig
 
@@ -739,22 +757,26 @@ def plot_fitness_landscape(
             "A fitness function must be provided to generate the landscape"
         )
 
+    # Compute mean gene values from the population to use as defaults
+    # for genes not being plotted. This gives a much more representative
+    # fitness landscape than using zeros.
+    all_gene_cols = [col for col in pop_df.columns if col.startswith("gene_")]
+    gene_means = [pop_df[col].mean() for col in all_gene_cols]
+    n_total_genes = len(all_gene_cols)
+
     # Generate fitness landscape grid
     x = np.linspace(x_min, x_max, resolution)
     y = np.linspace(y_min, y_max, resolution)
     X, Y = np.meshgrid(x, y)
 
-    # Calculate fitness values
+    # Calculate fitness values using population mean for non-plotted genes
     Z = np.zeros_like(X)
     for i in range(resolution):
         for j in range(resolution):
-            # Create a chromosome with default values to evaluate fitness
-            chromosome = [0.0] * max(gene_indices) + [
-                0.0
-            ]  # +1 to ensure enough elements
+            chromosome = list(gene_means[:n_total_genes])
             chromosome[gene_indices[0]] = X[i, j]
             chromosome[gene_indices[1]] = Y[i, j]
-            Z[i, j] = fitness_function(chromosome)  # Calculate fitness
+            Z[i, j] = fitness_function(chromosome)
 
     # Plot each generation
     for i, gen in enumerate(selected_gens):
@@ -769,7 +791,7 @@ def plot_fitness_landscape(
         gen_data = pop_df[pop_df["generation"] == gen]
 
         # Plot individuals as scatter points
-        scatter = ax.scatter(
+        ax.scatter(
             gen_data[gene_cols[0]],
             gen_data[gene_cols[1]],
             c=population_color,
@@ -797,6 +819,7 @@ def plot_fitness_landscape(
     # Save figure if output file is specified
     if output_file:
         plt.savefig(output_file, dpi=300)
+        plt.close(fig)
 
     return fig
 
@@ -864,22 +887,24 @@ def create_fitness_landscape_animation(
     y_min -= y_pad
     y_max += y_pad
 
+    # Compute mean gene values for non-plotted genes
+    all_gene_cols = [col for col in pop_df.columns if col.startswith("gene_")]
+    gene_means = [pop_df[col].mean() for col in all_gene_cols]
+    n_total_genes = len(all_gene_cols)
+
     # Generate fitness landscape grid
     x = np.linspace(x_min, x_max, resolution)
     y = np.linspace(y_min, y_max, resolution)
     X, Y = np.meshgrid(x, y)
 
-    # Calculate fitness values
+    # Calculate fitness values using population mean for non-plotted genes
     Z = np.zeros_like(X)
     for i in range(resolution):
         for j in range(resolution):
-            # Create a chromosome with default values to evaluate fitness
-            chromosome = [0.0] * max(gene_indices) + [
-                0.0
-            ]  # +1 to ensure enough elements
+            chromosome = list(gene_means[:n_total_genes])
             chromosome[gene_indices[0]] = X[i, j]
             chromosome[gene_indices[1]] = Y[i, j]
-            Z[i, j] = fitness_function(chromosome)  # Calculate fitness
+            Z[i, j] = fitness_function(chromosome)
 
     # Create figure and axes
     fig, ax = plt.subplots(figsize=figsize)
@@ -943,20 +968,12 @@ def create_fitness_landscape_animation(
                 best_x = gen_data.loc[best_idx, gene_cols[0]]
                 best_y = gen_data.loc[best_idx, gene_cols[1]]
             else:
-                # Calculate fitness for each individual
+                # Calculate fitness for each individual using all gene values
                 best_fitness = -float("inf")
                 best_x, best_y = 0, 0
 
                 for _, row in gen_data.iterrows():
-                    # Create a chromosome with default values to evaluate fitness
-                    chromosome = [0.0] * max(gene_indices) + [
-                        0.0
-                    ]  # +1 to ensure enough elements
-                    for i, col in enumerate(gene_cols):
-                        if i < len(chromosome):
-                            chromosome[i] = row[col]
-
-                    # Calculate fitness
+                    chromosome = [row[col] for col in all_gene_cols]
                     fitness = fitness_function(chromosome)
 
                     if fitness > best_fitness:
@@ -1169,8 +1186,9 @@ def plot_3d_migration_trajectory(
                 alpha=alpha,
                 levels=10,
             )
-        except:
-            # If density plot fails, just skip it
+        except (ValueError, np.linalg.LinAlgError):
+            # Density estimation can fail with degenerate data (e.g. singular
+            # covariance matrix when all points cluster at one location)
             pass
 
     # Add labels and title
@@ -1182,6 +1200,7 @@ def plot_3d_migration_trajectory(
     # Save figure if output file is specified
     if output_file:
         plt.savefig(output_file, dpi=300, bbox_inches="tight")
+        plt.close(fig)
 
     return fig
 
@@ -1282,6 +1301,7 @@ def plot_pairwise_correlations(
     # Save figure if output file is specified
     if output_file:
         plt.savefig(output_file, dpi=300, bbox_inches="tight")
+        plt.close(fig)
 
     return fig
 
@@ -1311,6 +1331,9 @@ def plot_reduced_space_migration(
     # Create output directory if it doesn't exist
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
+
+    # Work on a copy to avoid mutating the caller's DataFrame
+    population_data = population_data.copy()
 
     # Check if we have enough genetic information for the method
     gene_columns = [col for col in population_data.columns if col.startswith("gene_")]
