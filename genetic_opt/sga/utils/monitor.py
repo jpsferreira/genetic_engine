@@ -412,13 +412,31 @@ class OptimizationMonitor:
     def _get_fitness_color(self, fitness: float) -> int:
         """Get the appropriate color for a fitness value.
 
+        Uses the fitness history to determine relative quality: top third
+        of the observed range is green, middle third is yellow, bottom
+        third is red. Falls back to absolute thresholds when no history
+        is available.
+
         Args:
             fitness: Fitness value
 
         Returns:
             Curses color pair
         """
-        # For negative fitness (minimizing problems like MSE)
+        history = self.metrics.get("best_fitness", [])
+        if len(history) >= 2:
+            min_seen = min(history)
+            max_seen = max(history)
+            if max_seen > min_seen:
+                ratio = (fitness - min_seen) / (max_seen - min_seen)
+                if ratio > 0.66:
+                    return curses.color_pair(1)  # Good
+                elif ratio > 0.33:
+                    return curses.color_pair(2)  # Okay
+                else:
+                    return curses.color_pair(3)  # Bad
+
+        # Fallback: absolute thresholds
         if fitness < 0:
             if fitness > -0.5:
                 return curses.color_pair(1)  # Good (close to 0)
@@ -426,7 +444,6 @@ class OptimizationMonitor:
                 return curses.color_pair(2)  # Okay
             else:
                 return curses.color_pair(3)  # Bad
-        # For positive fitness (maximizing problems)
         else:
             if fitness > 0.8:
                 return curses.color_pair(1)  # Good
@@ -434,8 +451,6 @@ class OptimizationMonitor:
                 return curses.color_pair(2)  # Okay
             else:
                 return curses.color_pair(3)  # Bad
-
-        return curses.color_pair(6)  # Default color
 
     def _safe_addstr(self, y: int, x: int, text: str, attr=0) -> None:
         """Safely add a string to the screen, checking bounds.
