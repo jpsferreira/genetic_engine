@@ -19,6 +19,13 @@ from genetic_opt.sga.utils.visualization import (
     plot_reduced_space_migration,
 )
 
+# Interactive Plotly visualization (optional dependency)
+try:
+    from genetic_opt.sga.utils.bio_visualization import create_evolution_chronicle
+    _has_plotly = True
+except ImportError:
+    _has_plotly = False
+
 __all__ = [
     # Monitor
     "OptimizationMonitor",
@@ -26,7 +33,7 @@ __all__ = [
     "export_metrics_to_csv",
     "export_population_history_to_csv",
     "export_run_metadata",
-    # Visualization
+    # Visualization (matplotlib)
     "plot_metrics",
     "plot_population_density",
     "create_population_migration_animation",
@@ -37,4 +44,6 @@ __all__ = [
     "plot_3d_migration_trajectory",
     "plot_pairwise_correlations",
     "plot_reduced_space_migration",
+    # Interactive visualization (plotly)
+    *(["create_evolution_chronicle"] if _has_plotly else []),
 ]
